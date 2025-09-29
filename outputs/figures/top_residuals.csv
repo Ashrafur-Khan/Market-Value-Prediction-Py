@@ -1,0 +1,21 @@
+Player,model,residual,prediction,actual,Position,League,Team,Age
+Antoine Griezmann,Linear,-69988468.9230939,50011531.0769061,120000000,1,LaLiga,Barcelona,28
+Lucas Hernández,Linear,-52302131.91636787,27697868.083632126,80000000,3,Bundesliga,Bayern München,23
+Harry Maguire,Linear,-51907337.50290212,35092662.49709788,87000000,3,Premier,Manchester United,26
+Lucas Hernández,RandomForest,-45220000.0,34780000.0,80000000,3,Bundesliga,Bayern München,23
+Lucas Hernández,GBM,-44849404.63425668,35150595.36574332,80000000,3,Bundesliga,Bayern München,23
+Romelu Lukaku,Linear,-39171069.191861555,34828930.808138445,74000000,1,Serie A,Internazionale,26
+Eden Hazard,Linear,-38297894.29241726,76702105.70758274,115000000,1,LaLiga,Real Madrid,28
+Nicolas Pépé,Linear,-35251462.01839917,44748537.98160083,80000000,1,Premier,Arsenal,24
+Rodri Hernández,Linear,-31658860.826247044,31041139.173752956,62700000,2,Premier,Manchester City,22
+Harry Maguire,GBM,-31384161.307461925,55615838.692538075,87000000,3,Premier,Manchester United,26
+Giovani Lo Celso,Linear,25815787.987105057,47815787.98710506,22000000,2,Premier,Tottenham Hotspur,23
+Paco Alcácer,RandomForest,26079400.0,47079400.0,21000000,1,Bundesliga,Borussia Dortmund,25
+Paco Alcácer,Linear,26507788.48771608,47507788.48771608,21000000,1,Bundesliga,Borussia Dortmund,25
+Giovani Lo Celso,GBM,26619330.99163159,48619330.99163159,22000000,2,Premier,Tottenham Hotspur,23
+Kieran Trippier,GBM,27981677.789015144,49981677.789015144,22000000,3,LaLiga,Atlético Madrid,28
+Julian Brandt,GBM,28142586.537556097,53142586.5375561,25000000,2,Bundesliga,Borussia Dortmund,23
+Julian Brandt,RandomForest,32175200.0,57175200.0,25000000,2,Bundesliga,Borussia Dortmund,23
+Kieran Trippier,RandomForest,34461200.0,56461200.0,22000000,3,LaLiga,Atlético Madrid,28
+Benjamin Pavard,RandomForest,40713800.0,75713800.0,35000000,3,Bundesliga,Bayern München,23
+Benjamin Pavard,GBM,43816302.652961135,78816302.65296113,35000000,3,Bundesliga,Bayern München,23

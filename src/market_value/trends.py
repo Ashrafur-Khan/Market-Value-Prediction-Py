@@ -1,7 +1,6 @@
-# src/ccf_from_trends.py
-import os
+#Utilities for translating the R trends feature engineering into Python
 from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,12 +15,14 @@ class LayerRanges:
     sl: Optional[Tuple[int, int]]
     tl: Optional[Tuple[int, int]]
 
+
 @dataclass
 class LayerScales:
     reference_scale: float
     fl_scale: float
     sl_scale: float
     tl_scale: float
+
 
 @dataclass
 class SheetSpec:
@@ -31,9 +32,9 @@ class SheetSpec:
 
 
 def _slice_1based_inclusive(df: pd.DataFrame, start_end: Tuple[int, int]) -> pd.DataFrame:
-    """Slice columns using 1-based inclusive indexing (like R)."""
+    #Slice columns using 1-based inclusive indexing (like R)
     start, end = start_end
-    return df.iloc[:, start-1:end]
+    return df.iloc[:, start - 1 : end]
 
 
 def _apply_layer(df: pd.DataFrame, rng: Optional[Tuple[int, int]], scale: float) -> pd.DataFrame:
@@ -48,28 +49,24 @@ def _apply_layer(df: pd.DataFrame, rng: Optional[Tuple[int, int]], scale: float)
     return block
 
 
-def build_factor_conversion(excel_path: str,
-                            out_csv_path: Optional[str] = None,
-                            sheet_specs: Optional[List[SheetSpec]] = None) -> pd.DataFrame:
-    """
-    Reproduce the R pipeline: build layered/scaled matrix and transpose it.
-    Returns the transposed DataFrame; optionally writes CSV.
-    """
+def build_factor_conversion(
+    excel_path: str,
+    out_csv_path: Optional[str] = None,
+    sheet_specs: Optional[List[SheetSpec]] = None,
+) -> pd.DataFrame:
+    #Reproduce the R pipeline: build layered/scaled matrix and transpose it
     if sheet_specs is None:
         sheet_specs = [
-            # Forwards (DELANTEROS)
             SheetSpec(
                 name="DELANTEROS",
                 ranges=LayerRanges(reference=None, fl=(2, 31), sl=(32, 223), tl=(224, 389)),
                 scales=LayerScales(reference_scale=1.0, fl_scale=1.0, sl_scale=0.04, tl_scale=0.0016),
             ),
-            # Midfielders (CENTROCAMPISTAS)
             SheetSpec(
                 name="CENTROCAMPISTAS",
                 ranges=LayerRanges(reference=(2, 2), fl=(3, 89), sl=(90, 423), tl=(424, 446)),
                 scales=LayerScales(reference_scale=1.0, fl_scale=0.15, sl_scale=0.0045, tl_scale=0.000135),
             ),
-            # Defenders (DEFENSAS)
             SheetSpec(
                 name="DEFENSAS",
                 ranges=LayerRanges(reference=(2, 2), fl=(3, 85), sl=(86, 381), tl=(382, 598)),
@@ -86,9 +83,9 @@ def build_factor_conversion(excel_path: str,
         df = xl.parse(spec.name)
 
         ref_block = _apply_layer(df, spec.ranges.reference, spec.scales.reference_scale)
-        fl_block  = _apply_layer(df, spec.ranges.fl,         spec.scales.fl_scale)
-        sl_block  = _apply_layer(df, spec.ranges.sl,         spec.scales.sl_scale)
-        tl_block  = _apply_layer(df, spec.ranges.tl,         spec.scales.tl_scale)
+        fl_block = _apply_layer(df, spec.ranges.fl, spec.scales.fl_scale)
+        sl_block = _apply_layer(df, spec.ranges.sl, spec.scales.sl_scale)
+        tl_block = _apply_layer(df, spec.ranges.tl, spec.scales.tl_scale)
 
         blocks = []
         if spec.name == "DELANTEROS":
@@ -108,24 +105,22 @@ def build_factor_conversion(excel_path: str,
     return factor_conversion_T
 
 
-def compute_indicators(matrix_df: pd.DataFrame,
-                       indicator_start_col: int = 1,
-                       exclude_first_col_for_pca: bool = False,
-                       out_csv_path: Optional[str] = None) -> pd.DataFrame:
-    """
-    Compute PC1 + summary stats across weekly columns.
-    - indicator_start_col=1 uses all numeric columns (your matrix is all weeks).
-    - exclude_first_col_for_pca: set True only if col0 is an ID.
-    """
+def compute_indicators(
+    matrix_df: pd.DataFrame,
+    indicator_start_col: int = 1,
+    exclude_first_col_for_pca: bool = False,
+    out_csv_path: Optional[str] = None,
+) -> pd.DataFrame:
+    #Compute PCA-based and summary indicators across weekly columns
     numeric_df = matrix_df.copy()
     for col in numeric_df.columns:
         numeric_df[col] = pd.to_numeric(numeric_df[col], errors="coerce")
 
-    # PCA input (fill NaNs with column means)
     if exclude_first_col_for_pca and numeric_df.shape[1] > 1:
         pca_input = numeric_df.iloc[:, 1:].to_numpy()
     else:
         pca_input = numeric_df.to_numpy()
+
     col_means = np.nanmean(pca_input, axis=0, keepdims=True)
     inds = np.where(np.isnan(pca_input))
     pca_input[inds] = np.take_along_axis(col_means, np.expand_dims(inds[1], 0), axis=1)[0]
@@ -135,14 +130,16 @@ def compute_indicators(matrix_df: pd.DataFrame,
     start_idx = max(0, indicator_start_col - 1)
     sub = numeric_df.iloc[:, start_idx:]
 
-    indicators = pd.DataFrame({
-        "PC1": pc1,
-        "Mean": sub.mean(axis=1, skipna=True),
-        "Variance": sub.var(axis=1, ddof=1, skipna=True),
-        "Min": sub.min(axis=1, skipna=True),
-        "Max": sub.max(axis=1, skipna=True),
-        "Median": sub.median(axis=1, skipna=True),
-    })
+    indicators = pd.DataFrame(
+        {
+            "PC1": pc1,
+            "Mean": sub.mean(axis=1, skipna=True),
+            "Variance": sub.var(axis=1, ddof=1, skipna=True),
+            "Min": sub.min(axis=1, skipna=True),
+            "Max": sub.max(axis=1, skipna=True),
+            "Median": sub.median(axis=1, skipna=True),
+        }
+    )
 
     if out_csv_path:
         indicators.to_csv(out_csv_path, index=False)
