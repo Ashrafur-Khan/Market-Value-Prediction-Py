@@ -141,6 +141,11 @@ def compute_indicators(
         }
     )
 
+    rolling_windows = [3, 5]
+    for w in rolling_windows:
+        indicators[f"rolling_mean_{w}w"] = sub.rolling(window = w, axis = 1, min_periods = 1).mean().mean(axis = 1)
+        indicators[f"rolling_std_{w}w"] = sub.rolling(window = w, axis = 1, min_periods = 1).std().mean(axis = 1)
+        
     if out_csv_path:
         indicators.to_csv(out_csv_path, index=False)
 
