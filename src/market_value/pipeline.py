@@ -17,6 +17,8 @@ from .trends import build_factor_conversion, compute_indicators
 from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 
+from sklearn.model_selection import KFold, cross_val_score
+
 @dataclass(frozen=True)
 class ModelingData:
     #Container for the model-ready matrices.
@@ -175,8 +177,22 @@ def train_models(data: ModelingData) -> Tuple[pd.DataFrame, Dict[str, np.ndarray
 
     results: List[Dict[str, float]] = []
     predictions: Dict[str, np.ndarray] = {}
+    fitted_models: Dict[str, object] = {}
 
+    kf = KFold(n_splits = n_splits, shuffle = True, random_state = 42)
+    
     for name, model in models.items():
+        print(f"Training {name} with {n-splits}-Fold CV..."}
+        cv_scores = cross_val_score(
+            model,
+            data.X_train,
+            data.y_train,
+            scoring = "neg_root_mean_squared_error",
+            cv = kf,
+            n_jobs = -1
+        )
+        mean_rmse = -np.mean(cv_scores)
+        results.append({"model": name, "rmse_cv": mean_rmse})
         model.fit(data.X_train, data.y_train)
         preds = model.predict(data.X_test)
         try:
@@ -185,6 +201,7 @@ def train_models(data: ModelingData) -> Tuple[pd.DataFrame, Dict[str, np.ndarray
             rmse = float(np.sqrt(mean_squared_error(data.y_test, preds)))
         results.append({"model": name, "rmse_vs_fee": rmse})
         predictions[name] = preds
+        fitted_models[name] = model
 
     metrics = pd.DataFrame(results).sort_values("rmse_vs_fee")
     return metrics, predictions, models
