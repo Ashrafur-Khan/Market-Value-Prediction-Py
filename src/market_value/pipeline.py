@@ -14,6 +14,8 @@ from sklearn.metrics import mean_squared_error
 from .config import PATHS, ProjectPaths
 from .trends import build_factor_conversion, compute_indicators
 
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
 
 @dataclass(frozen=True)
 class ModelingData:
@@ -167,6 +169,8 @@ def train_models(data: ModelingData) -> Tuple[pd.DataFrame, Dict[str, np.ndarray
         "Linear": LinearRegression(),
         "RandomForest": RandomForestRegressor(n_estimators=5000, random_state=42, n_jobs=-1),
         "GBM": GradientBoostingRegressor(random_state=42),
+        "XGBoost": XGBRegressor(n_estimators = 1000, random_state = 42, n_jobs = -1, tree_method = "hist"),
+        "LightGBM": LGBMRegressor(n_estimators = 1000, random_state = 42, n_jobs = -1),
     }
 
     results: List[Dict[str, float]] = []
