@@ -19,6 +19,17 @@ from lightgbm import LGBMRegressor
 
 from sklearn.model_selection import KFold, cross_val_score
 
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.metrics import mean_squared_error
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Tuple
+
 @dataclass(frozen=True)
 class ModelingData:
     #Container for the model-ready matrices.
@@ -165,46 +176,69 @@ def create_model_matrices(base: pd.DataFrame) -> ModelingData:
 
 # --- Modeling helpers ---------------------------------------------------------
 
-def train_models(data: ModelingData) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
-    #Fit baseline regressors and collect RMSE metrics and predictions
+def train_models(data: ModelingData, n_splits: int = 5) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
+    """
+    Train and evaluate multiple regression models using K-Fold cross-validation and log-transformed target.
+    Returns: (metrics DataFrame, predictions dict, fitted models dict)
+    """
+    # --- Step 1: Apply log-transform to target to stabilize scale ---
+    y_train_log = np.log1p(data.y_train)
+    y_test_log = np.log1p(data.y_test)
+
+    # --- Step 2: Define models ---
     models: Dict[str, object] = {
         "Linear": LinearRegression(),
-        "RandomForest": RandomForestRegressor(n_estimators=5000, random_state=42, n_jobs=-1),
+        "Ridge": Ridge(alpha=1.0, random_state=42),
+        "Lasso": Lasso(alpha=0.001, random_state=42),
+        "RandomForest": RandomForestRegressor(n_estimators=2000, random_state=42, n_jobs=-1),
         "GBM": GradientBoostingRegressor(random_state=42),
-        "XGBoost": XGBRegressor(n_estimators = 1000, random_state = 42, n_jobs = -1, tree_method = "hist"),
-        "LightGBM": LGBMRegressor(n_estimators = 1000, random_state = 42, n_jobs = -1),
+        "XGBoost": XGBRegressor(n_estimators=1000, random_state=42, n_jobs=-1, tree_method="hist"),
+        "LightGBM": LGBMRegressor(n_estimators=1000, random_state=42, n_jobs=-1),
+        "CatBoost": CatBoostRegressor(iterations=1000, depth=8, learning_rate=0.05, loss_function="RMSE", 
+                                      random_seed=42, verbose=False, allow_writing_files=False)
     }
 
     results: List[Dict[str, float]] = []
     predictions: Dict[str, np.ndarray] = {}
     fitted_models: Dict[str, object] = {}
 
-    kf = KFold(n_splits = n_splits, shuffle = True, random_state = 42)
-    
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    # --- Step 3: Cross-validation & model fitting ---
     for name, model in models.items():
-        print(f"Training {name} with {n-splits}-Fold CV..."}
+        print(f"\nTraining {name} with {n_splits}-Fold CV...")
+
         cv_scores = cross_val_score(
             model,
             data.X_train,
-            data.y_train,
-            scoring = "neg_root_mean_squared_error",
-            cv = kf,
-            n_jobs = -1
+            y_train_log,  # use log target
+            scoring="neg_root_mean_squared_error",
+            cv=kf,
+            n_jobs=-1
         )
-        mean_rmse = -np.mean(cv_scores)
-        results.append({"model": name, "rmse_cv": mean_rmse})
-        model.fit(data.X_train, data.y_train)
-        preds = model.predict(data.X_test)
-        try:
-            rmse = float(mean_squared_error(data.y_test, preds, squared=False))
-        except TypeError:
-            rmse = float(np.sqrt(mean_squared_error(data.y_test, preds)))
-        results.append({"model": name, "rmse_vs_fee": rmse})
+        mean_rmse_cv = -np.mean(cv_scores)
+
+        model.fit(data.X_train, y_train_log)
+        preds_log = model.predict(data.X_test)
+        preds = np.expm1(preds_log)  # inverse of log1p for final predictions
+        rmse_test = float(mean_squared_error(data.y_test, preds))
+
+        results.append({
+            "model": name,
+            "rmse_cv": mean_rmse_cv,
+            "rmse_test": rmse_test
+        })
+
         predictions[name] = preds
         fitted_models[name] = model
 
-    metrics = pd.DataFrame(results).sort_values("rmse_vs_fee")
-    return metrics, predictions, models
+    # --- Step 4: Combine and sort results ---
+    metrics = pd.DataFrame(results).sort_values("rmse_cv")
+    print("\n=== RMSE Results (lower is better) ===")
+    print(metrics)
+
+    return metrics, predictions, fitted_models
+
 
 
 def compute_feature_importances(
@@ -255,3 +289,90 @@ def run_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
     print(f"\nOutputs written to: {paths.output_dir}")
 
     return metrics
+
+def run_position_specific_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
+    paths = paths or PATHS
+    paths.output_dir.mkdir(parents=True, exist_ok=True)
+
+    indicators = prepare_indicator_frame(paths)
+    mv_main, mv_split = load_market_value_frames(paths)
+    countries = load_country_metadata(paths)
+    base = assemble_model_base(mv_main, mv_split, indicators, countries)
+
+    base["Position"] = base["Position"].astype(str).fillna("Unknown").str.upper()
+
+
+    position_groups = {
+    "FORWARDS": [
+        "FW", "CF", "ST", "LW", "RW", "ATTACK", "FORWARD", "WINGER", "DELANTERO"
+    ],
+    "MIDFIELDERS": [
+        "MF", "CM", "CAM", "CDM", "MIDFIELD", "PLAYMAKER", "CENTROCAMPISTA"
+    ],
+    "DEFENDERS": [
+        "DF", "CB", "LB", "RB", "CB", "DEFENDER", "FULL BACK", "DEFENSA"
+    ],
+    "GOALKEEPERS": [
+        "GK", "GOALKEEPER", "KEEPER", "PORTERO"
+    ]
+}
+
+
+    def get_position_group(pos: str) -> str:
+        for group_name, aliases in position_groups.items():
+            if any(alias in pos for alias in aliases):
+                return group_name
+        return "OTHER"
+
+    base["PositionGroup"] = base["Position"].apply(get_position_group)
+
+    all_metrics = []
+    all_predictions = []
+
+    for group_name, group_df in base.groupby("PositionGroup"):
+        print(f"\n=== Training models for {group_name} ({len(group_df)} players) ===")
+
+        try:
+            modeling_data = create_model_matrices(group_df)
+            if len(modeling_data.X_train) < 20:
+                print(f"Skipping {group_name}: not enough training samples.")
+                continue
+
+            metrics, predictions, fitted_models = train_models(modeling_data)
+            metrics["PositionGroup"] = group_name
+            all_metrics.append(metrics)
+
+            pred_frame = modeling_data.test_view.copy()
+            for name, values in predictions.items():
+                pred_frame[f"pred_{name}_marketValue"] = values
+            pred_frame["PositionGroup"] = group_name
+            all_predictions.append(pred_frame)
+
+            importances = compute_feature_importances(fitted_models, modeling_data.features)
+            if not importances.empty:
+                importances["PositionGroup"] = group_name
+                importances.to_csv(paths.output_dir / f"feature_importances_{group_name}.csv", index=False)
+
+            metrics.to_csv(paths.output_dir / f"model_rmse_{group_name}.csv", index=False)
+            pred_frame.to_csv(paths.output_dir / f"test_predictions_{group_name}.csv", index=False)
+
+        except Exception as e:
+            print(f"Skipping {group_name} due to error: {e}")
+
+    if all_metrics:
+        all_metrics_df = pd.concat(all_metrics, ignore_index=True)
+        all_metrics_df.to_csv(paths.output_dir / "all_position_metrics.csv", index=False)
+        print("\n=== Combined RMSE results across all positions ===")
+        print(all_metrics_df.groupby("PositionGroup")["rmse_test"].mean().sort_values())
+    else:
+        all_metrics_df = pd.DataFrame()
+        print("\nNo valid models were trained.")
+
+    if all_predictions:
+        all_preds_df = pd.concat(all_predictions, ignore_index=True)
+        all_preds_df.to_csv(paths.output_dir / "all_position_predictions.csv", index=False)
+    else:
+        all_preds_df = pd.DataFrame()
+
+    print(f"\nOutputs written to: {paths.output_dir}")
+    return all_metrics_df
