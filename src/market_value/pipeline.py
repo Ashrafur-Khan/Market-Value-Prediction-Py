@@ -262,14 +262,18 @@ def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = Tru
         model.fit(data.X_train, data.y_train)
         preds = model.predict(data.X_test)
 
-        rmse_test = float(mean_squared_error(data.y_test, preds))
-        mae_test = float(mean_absolute_error(data.y_test, preds))
+        #rmse = float(mean_squared_error(data.y_test, preds, squared=False))
+        rmse_test = float(np.sqrt(np.mean((data.y_test - preds) ** 2)))
+        #mae_test = float(mean_absolute_error(data.y_test, preds))
+        mae_test = float(np.mean(np.abs(data.y_test - preds)))
+
 
         results.append({
             "model": name,
             "rmse_cv": mean_rmse_cv,
             "rmse_test": rmse_test,
-            "mae_test": mae_test
+            "mae_test": mae_test,
+            "rmse_vs_fee": rmse_test   # same metric, explicit name for paper consistency
         })
 
         predictions[name] = preds
@@ -303,41 +307,41 @@ def compute_feature_importances(
 
 import matplotlib.pyplot as plt
 
-def generate_visuals(metrics: pd.DataFrame, output_dir: str):
-    # Make a copy and sort by each metric for clarity
-    df_rmse = metrics.sort_values("rmse_test")
-    df_mae = metrics.sort_values("mae_test")
-    df_cv = metrics.sort_values("rmse_cv")
+# def generate_visuals(metrics: pd.DataFrame, output_dir: str):
+#     # Make a copy and sort by each metric for clarity
+#     df_rmse = metrics.sort_values("rmse_test")
+#     df_mae = metrics.sort_values("mae_test")
+#     df_cv = metrics.sort_values("rmse_cv")
     
-    # Bar chart test RMSE
-    plt.figure(figsize = (12, 7))
-    plt.barh(df_rmse["model"], df_rmse["rmse_test"])
-    plt.xlabel("Test RMSE lower is better")
-    plt.title("Model Performance Test RMSE")
-    plt.grid(axis = "x", alpha = 0.4)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/rmse_bar_chart.png", dpi = 300)
-    plt.close()
+#     # Bar chart test RMSE
+#     plt.figure(figsize = (12, 7))
+#     plt.barh(df_rmse["model"], df_rmse["rmse_test"])
+#     plt.xlabel("Test RMSE lower is better")
+#     plt.title("Model Performance Test RMSE")
+#     plt.grid(axis = "x", alpha = 0.4)
+#     plt.tight_layout()
+#     plt.savefig(f"{output_dir}/rmse_bar_chart.png", dpi = 300)
+#     plt.close()
 
-    # Bar chart test MAE
-    plt.figure(figsize=(12, 7))
-    plt.barh(df_mae["model"], df_mae["mae_test"], color="#31a354")
-    plt.xlabel("Test MAE (lower is better)")
-    plt.title("Model Performance — Test MAE")
-    plt.grid(axis="x", alpha=0.4)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/mae_bar_chart.png", dpi=300)
-    plt.close()
+#     # Bar chart test MAE
+#     plt.figure(figsize=(12, 7))
+#     plt.barh(df_mae["model"], df_mae["mae_test"], color="#31a354")
+#     plt.xlabel("Test MAE (lower is better)")
+#     plt.title("Model Performance — Test MAE")
+#     plt.grid(axis="x", alpha=0.4)
+#     plt.tight_layout()
+#     plt.savefig(f"{output_dir}/mae_bar_chart.png", dpi=300)
+#     plt.close()
 
-    # Bar chart test CV
-    plt.figure(figsize=(12, 7))
-    plt.barh(df_cv["model"], df_cv["rmse_cv"], color="#de2d26")
-    plt.xlabel("Cross-validation RMSE (lower is better)")
-    plt.title("Model Performance — CV RMSE")
-    plt.grid(axis="x", alpha=0.4)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/cv_rmse_bar_chart.png", dpi=300)
-    plt.close()
+#     # Bar chart test CV
+#     plt.figure(figsize=(12, 7))
+#     plt.barh(df_cv["model"], df_cv["rmse_cv"], color="#de2d26")
+#     plt.xlabel("Cross-validation RMSE (lower is better)")
+#     plt.title("Model Performance — CV RMSE")
+#     plt.grid(axis="x", alpha=0.4)
+#     plt.tight_layout()
+#     plt.savefig(f"{output_dir}/cv_rmse_bar_chart.png", dpi=300)
+#     plt.close()
 
 # Public pipeline API 
 
@@ -367,7 +371,7 @@ def run_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
         importances.to_csv(paths.output_dir / "feature_importances.csv", index=False)
 
     # Generate visuals automatically
-    generate_visuals(metrics, str(paths.output_dir))
+    #generate_visuals(metrics, str(paths.output_dir))
     
     print("RMSE vs actual fee (lower is better)")
     print(metrics.to_string(index=False))
