@@ -43,7 +43,8 @@ Key functions:
   layered matrix to extract a first principal component (PC1) indicator and
   computes summary statistics (mean, variance, min, max, median) across the
   weekly trend columns. Missing values are imputed with column means prior to
-  running PCA.【F:src/market_value/trends.py†L108-L147】
+  running PCA. Added mean and standard deviation rolling windows
+  【F:src/market_value/trends.py†L108-L147】
 
 ### `src/market_value/pipeline.py`
 
@@ -59,6 +60,9 @@ Key functions:
    Boosting) to predict market value and evaluate them on sold players using
    RMSE against actual transfer fees. The results are written to CSV along with
    model predictions and optional feature importances.【F:src/market_value/pipeline.py†L133-L238】
+6. Added Ridge, Lasso, XGBoost, LightGBM, and CatBoost to test and compare results
+7. Added k fold cross validation
+8. Added position specific pipeline
 
 ### `src/recreate_project.py`
 

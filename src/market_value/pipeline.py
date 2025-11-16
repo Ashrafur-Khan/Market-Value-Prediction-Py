@@ -14,6 +14,21 @@ from sklearn.metrics import mean_squared_error
 from .config import PATHS, ProjectPaths
 from .trends import build_factor_conversion, compute_indicators
 
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+
+from sklearn.model_selection import KFold, cross_val_score
+
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+from catboost import CatBoostRegressor
+from sklearn.model_selection import RandomizedSearchCV, KFold, cross_val_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import numpy as np
+import pandas as pd
+from typing import Dict, List, Tuple
 
 @dataclass(frozen=True)
 class ModelingData:
@@ -158,32 +173,117 @@ def create_model_matrices(base: pd.DataFrame) -> ModelingData:
         test_view=test_view,
     )
 
-
-# --- Modeling helpers ---------------------------------------------------------
-
-def train_models(data: ModelingData) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
-    #Fit baseline regressors and collect RMSE metrics and predictions
+def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = True) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
+    # Define models
     models: Dict[str, object] = {
         "Linear": LinearRegression(),
-        "RandomForest": RandomForestRegressor(n_estimators=5000, random_state=42, n_jobs=-1),
+        "Ridge": Ridge(alpha=1.0, random_state=42),
+        "Lasso": Lasso(alpha=0.001, random_state=42),
+        "RandomForest": RandomForestRegressor(n_estimators=2000, random_state=42, n_jobs=-1),
         "GBM": GradientBoostingRegressor(random_state=42),
+        "XGBoost": XGBRegressor(n_estimators=1000, random_state=42, n_jobs=-1, tree_method="hist"),
+        "LightGBM": LGBMRegressor(n_estimators=1000, random_state=42, n_jobs=-1),
+        "CatBoost": CatBoostRegressor(iterations=1000, depth=8, learning_rate=0.05, loss_function="RMSE", 
+                                      random_seed=42, verbose=False, allow_writing_files=False),
     }
+
+    # Add tuned Quantile Regressor
+    if tune_lgbm_qr:
+        print("\nPerforming LightGBM_QR randomized hyperparameter search")
+
+        base_qr = LGBMRegressor(objective = "quantile", alpha = 0.5, random_state = 42, n_jobs = -1)
+
+        # Parameter search space
+        param_distributions = {
+            "num_leaves": np.arange(31, 128, 16),
+            "learning_rate": np.linspace(0.01, 0.1, 10),
+            "min_data_in_leaf": [10, 20, 50, 100],
+            "max_depth": [-1, 6, 8, 10],
+            "feature_fraction": [0.8, 0.9, 1.0],
+            "bagging_fraction": [0.8, 0.9, 1.0],
+            "lambda_l1": [0.0, 0.1, 0.5],
+            "lambda_l2": [0.0, 0.1, 0.5],
+            "n_estimators": [1000, 1500, 2000],
+        }
+
+        random_search = RandomizedSearchCV(
+            estimator = base_qr,
+            param_distributions = param_distributions,
+            n_iter = 25,  # test 25 random combos
+            scoring = "neg_mean_absolute_error",
+            cv = KFold(n_splits = 3, shuffle = True, random_state = 42),
+            n_jobs = -1,
+            verbose = 1,
+            random_state = 42
+        )
+
+        # Train on raw target for quantile regression
+        random_search.fit(data.X_train, data.y_train)
+        best_qr = random_search.best_estimator_
+        print("Best LightGBM_QR params:", random_search.best_params_)
+    else:
+        best_qr = LGBMRegressor(
+            objective = "quantile",
+            alpha = 0.5,
+            n_estimators = 2000,
+            learning_rate = 0.02,
+            num_leaves = 63,
+            feature_fraction = 0.9,
+            bagging_fraction = 0.9,
+            bagging_freq = 5,
+            lambda_l1 = 0.1,
+            lambda_l2 = 0.1,
+            random_state = 42,
+            n_jobs = -1
+        )
+
+    models["LightGBM_QR"] = best_qr
 
     results: List[Dict[str, float]] = []
     predictions: Dict[str, np.ndarray] = {}
+    fitted_models: Dict[str, object] = {}
 
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    # Cross validation and model fitting
     for name, model in models.items():
+        print(f"\nTraining {name} with {n_splits} Fold CV")
+
+        cv_scores = cross_val_score(
+            model,
+            data.X_train,
+            data.y_train,
+            scoring = "neg_root_mean_squared_error",
+            cv = kf,
+            n_jobs = -1
+        )
+        mean_rmse_cv = -np.mean(cv_scores)
+
         model.fit(data.X_train, data.y_train)
         preds = model.predict(data.X_test)
-        try:
-            rmse = float(mean_squared_error(data.y_test, preds, squared=False))
-        except TypeError:
-            rmse = float(np.sqrt(mean_squared_error(data.y_test, preds)))
-        results.append({"model": name, "rmse_vs_fee": rmse})
-        predictions[name] = preds
 
-    metrics = pd.DataFrame(results).sort_values("rmse_vs_fee")
-    return metrics, predictions, models
+        rmse_test = float(mean_squared_error(data.y_test, preds))
+        mae_test = float(mean_absolute_error(data.y_test, preds))
+
+        results.append({
+            "model": name,
+            "rmse_cv": mean_rmse_cv,
+            "rmse_test": rmse_test,
+            "mae_test": mae_test
+        })
+
+        predictions[name] = preds
+        fitted_models[name] = model
+
+        print(f"{name}: RMSE CV = {mean_rmse_cv:.4f}, RMSE Test = {rmse_test:.4f}, MAE Test = {mae_test:.4f}")
+
+    # Combine and sort results
+    metrics = pd.DataFrame(results).sort_values("rmse_cv")
+    print("\nModel Performance Summary")
+    print(metrics.to_string(index = False))
+
+    return metrics, predictions, fitted_models
+
 
 
 def compute_feature_importances(
@@ -201,6 +301,43 @@ def compute_feature_importances(
         return pd.DataFrame()
     return pd.concat(frames).sort_values(["model", "importance"], ascending=[True, False])
 
+import matplotlib.pyplot as plt
+
+def generate_visuals(metrics: pd.DataFrame, output_dir: str):
+    # Make a copy and sort by each metric for clarity
+    df_rmse = metrics.sort_values("rmse_test")
+    df_mae = metrics.sort_values("mae_test")
+    df_cv = metrics.sort_values("rmse_cv")
+    
+    # Bar chart test RMSE
+    plt.figure(figsize = (12, 7))
+    plt.barh(df_rmse["model"], df_rmse["rmse_test"])
+    plt.xlabel("Test RMSE lower is better")
+    plt.title("Model Performance Test RMSE")
+    plt.grid(axis = "x", alpha = 0.4)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/rmse_bar_chart.png", dpi = 300)
+    plt.close()
+
+    # Bar chart test MAE
+    plt.figure(figsize=(12, 7))
+    plt.barh(df_mae["model"], df_mae["mae_test"], color="#31a354")
+    plt.xlabel("Test MAE (lower is better)")
+    plt.title("Model Performance — Test MAE")
+    plt.grid(axis="x", alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/mae_bar_chart.png", dpi=300)
+    plt.close()
+
+    # Bar chart test CV
+    plt.figure(figsize=(12, 7))
+    plt.barh(df_cv["model"], df_cv["rmse_cv"], color="#de2d26")
+    plt.xlabel("Cross-validation RMSE (lower is better)")
+    plt.title("Model Performance — CV RMSE")
+    plt.grid(axis="x", alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/cv_rmse_bar_chart.png", dpi=300)
+    plt.close()
 
 # Public pipeline API 
 
@@ -229,7 +366,10 @@ def run_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
     if not importances.empty:
         importances.to_csv(paths.output_dir / "feature_importances.csv", index=False)
 
-    print("=== RMSE vs actual fee (lower is better) ===")
+    # Generate visuals automatically
+    generate_visuals(metrics, str(paths.output_dir))
+    
+    print("RMSE vs actual fee (lower is better)")
     print(metrics.to_string(index=False))
     print(f"\nOutputs written to: {paths.output_dir}")
 
