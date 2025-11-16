@@ -7,15 +7,8 @@ import unicodedata
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-
 from .config import PATHS, ProjectPaths
 from .trends import build_factor_conversion, compute_indicators
-
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
 
 from sklearn.model_selection import KFold, cross_val_score
 
@@ -25,9 +18,7 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 from sklearn.model_selection import RandomizedSearchCV, KFold, cross_val_score
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-import numpy as np
-import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_pinball_loss
 from typing import Dict, List, Tuple
 
 @dataclass(frozen=True)
@@ -173,27 +164,53 @@ def create_model_matrices(base: pd.DataFrame) -> ModelingData:
         test_view=test_view,
     )
 
-def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = True) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
-    # Define models
+def train_models(
+    data: ModelingData,
+    n_splits: int = 5,
+    tune_lgbm_qr: bool = True,
+    quantile_alphas: List[float] = [0.1, 0.5, 0.9],
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, object]]:
+
+    # Base mean-regression models
     models: Dict[str, object] = {
         "Linear": LinearRegression(),
         "Ridge": Ridge(alpha=1.0, random_state=42),
         "Lasso": Lasso(alpha=0.001, random_state=42),
-        "RandomForest": RandomForestRegressor(n_estimators=2000, random_state=42, n_jobs=-1),
+        "RandomForest": RandomForestRegressor(
+            n_estimators=2000, random_state=42, n_jobs=-1
+        ),
         "GBM": GradientBoostingRegressor(random_state=42),
-        "XGBoost": XGBRegressor(n_estimators=1000, random_state=42, n_jobs=-1, tree_method="hist"),
-        "LightGBM": LGBMRegressor(n_estimators=1000, random_state=42, n_jobs=-1),
-        "CatBoost": CatBoostRegressor(iterations=1000, depth=8, learning_rate=0.05, loss_function="RMSE", 
-                                      random_seed=42, verbose=False, allow_writing_files=False),
+        "XGBoost": XGBRegressor(
+            n_estimators=1000, random_state=42, n_jobs=-1, tree_method="hist"
+        ),
+        "LightGBM": LGBMRegressor(
+            n_estimators=1000, random_state=42, n_jobs=-1
+        ),
+        "CatBoost": CatBoostRegressor(
+            iterations=1000,
+            depth=8,
+            learning_rate=0.05,
+            loss_function="RMSE",
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+        ),
     }
 
-    # Add tuned Quantile Regressor
+    # Map model name -> quantile alpha (for QR models only)
+    model_alphas: Dict[str, float] = {}
+
+    # ---- LightGBM Quantile Models ----
     if tune_lgbm_qr:
-        print("\nPerforming LightGBM_QR randomized hyperparameter search")
+        print("\nPerforming LightGBM_QR randomized hyperparameter search (alpha=0.5)")
 
-        base_qr = LGBMRegressor(objective = "quantile", alpha = 0.5, random_state = 42, n_jobs = -1)
+        base_qr = LGBMRegressor(
+            objective="quantile",
+            alpha=0.5,
+            random_state=42,
+            n_jobs=-1,
+        )
 
-        # Parameter search space
         param_distributions = {
             "num_leaves": np.arange(31, 128, 16),
             "learning_rate": np.linspace(0.01, 0.1, 10),
@@ -207,37 +224,67 @@ def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = Tru
         }
 
         random_search = RandomizedSearchCV(
-            estimator = base_qr,
-            param_distributions = param_distributions,
-            n_iter = 25,  # test 25 random combos
-            scoring = "neg_mean_absolute_error",
-            cv = KFold(n_splits = 3, shuffle = True, random_state = 42),
-            n_jobs = -1,
-            verbose = 1,
-            random_state = 42
+            estimator=base_qr,
+            param_distributions=param_distributions,
+            n_iter=25,
+            scoring="neg_mean_absolute_error",
+            cv=KFold(n_splits=3, shuffle=True, random_state=42),
+            n_jobs=-1,
+            verbose=1,
+            random_state=42,
         )
 
-        # Train on raw target for quantile regression
         random_search.fit(data.X_train, data.y_train)
-        best_qr = random_search.best_estimator_
-        print("Best LightGBM_QR params:", random_search.best_params_)
-    else:
-        best_qr = LGBMRegressor(
-            objective = "quantile",
-            alpha = 0.5,
-            n_estimators = 2000,
-            learning_rate = 0.02,
-            num_leaves = 63,
-            feature_fraction = 0.9,
-            bagging_fraction = 0.9,
-            bagging_freq = 5,
-            lambda_l1 = 0.1,
-            lambda_l2 = 0.1,
-            random_state = 42,
-            n_jobs = -1
-        )
+        best_params = random_search.best_params_
+        print("Best LightGBM_QR params (alpha=0.5):", best_params)
 
-    models["LightGBM_QR"] = best_qr
+        # Build one LightGBM_QR model per quantile using same hyperparams
+        for alpha in quantile_alphas:
+            name = f"LightGBM_QR_{alpha}"
+            models[name] = LGBMRegressor(
+                objective="quantile",
+                alpha=alpha,
+                random_state=42,
+                n_jobs=-1,
+                **best_params,
+            )
+            model_alphas[name] = alpha
+
+    else:
+        base_params = dict(
+            n_estimators=2000,
+            learning_rate=0.02,
+            num_leaves=63,
+            feature_fraction=0.9,
+            bagging_fraction=0.9,
+            bagging_freq=5,
+            lambda_l1=0.1,
+            lambda_l2=0.1,
+        )
+        for alpha in quantile_alphas:
+            name = f"LightGBM_QR_{alpha}"
+            models[name] = LGBMRegressor(
+                objective="quantile",
+                alpha=alpha,
+                random_state=42,
+                n_jobs=-1,
+                **base_params,
+            )
+            model_alphas[name] = alpha
+
+    # ---- CatBoost Quantile Models ----
+    for alpha in quantile_alphas:
+        name = f"CatBoost_QR_{alpha}"
+        models[name] = CatBoostRegressor(
+            iterations=1000,
+            depth=8,
+            learning_rate=0.05,
+            loss_function=f"Quantile:alpha={alpha}",
+            random_seed=42,
+            verbose=False,
+            allow_writing_files=False,
+        )
+        model_alphas[name] = alpha
 
     results: List[Dict[str, float]] = []
     predictions: Dict[str, np.ndarray] = {}
@@ -245,7 +292,7 @@ def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = Tru
 
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    # Cross validation and model fitting
+    # ---- Training loop ----
     for name, model in models.items():
         print(f"\nTraining {name} with {n_splits} Fold CV")
 
@@ -253,40 +300,49 @@ def train_models(data: ModelingData, n_splits: int = 5, tune_lgbm_qr: bool = Tru
             model,
             data.X_train,
             data.y_train,
-            scoring = "neg_root_mean_squared_error",
-            cv = kf,
-            n_jobs = -1
+            scoring="neg_root_mean_squared_error",
+            cv=kf,
+            n_jobs=-1,
         )
         mean_rmse_cv = -np.mean(cv_scores)
 
         model.fit(data.X_train, data.y_train)
         preds = model.predict(data.X_test)
 
-        #rmse = float(mean_squared_error(data.y_test, preds, squared=False))
         rmse_test = float(np.sqrt(np.mean((data.y_test - preds) ** 2)))
-        #mae_test = float(mean_absolute_error(data.y_test, preds))
         mae_test = float(np.mean(np.abs(data.y_test - preds)))
 
+        pinball = np.nan
+        alpha_str = ""
+        if name in model_alphas:
+            alpha = model_alphas[name]
+            pinball = float(mean_pinball_loss(data.y_test, preds, alpha=alpha))
+            alpha_str = f", Pinball Loss (alpha={alpha}) = {pinball:.4f}"
 
         results.append({
             "model": name,
             "rmse_cv": mean_rmse_cv,
             "rmse_test": rmse_test,
             "mae_test": mae_test,
-            "rmse_vs_fee": rmse_test   # same metric, explicit name for paper consistency
+            "rmse_vs_fee": rmse_test,
+            "pinball_loss": pinball,
         })
 
         predictions[name] = preds
         fitted_models[name] = model
 
-        print(f"{name}: RMSE CV = {mean_rmse_cv:.4f}, RMSE Test = {rmse_test:.4f}, MAE Test = {mae_test:.4f}")
+        print(
+            f"{name}: RMSE CV = {mean_rmse_cv:.4f}, "
+            f"RMSE Test = {rmse_test:.4f}, "
+            f"MAE Test = {mae_test:.4f}{alpha_str}"
+        )
 
-    # Combine and sort results
     metrics = pd.DataFrame(results).sort_values("rmse_cv")
     print("\nModel Performance Summary")
-    print(metrics.to_string(index = False))
+    print(metrics.to_string(index=False))
 
     return metrics, predictions, fitted_models
+
 
 
 
@@ -307,43 +363,6 @@ def compute_feature_importances(
 
 import matplotlib.pyplot as plt
 
-# def generate_visuals(metrics: pd.DataFrame, output_dir: str):
-#     # Make a copy and sort by each metric for clarity
-#     df_rmse = metrics.sort_values("rmse_test")
-#     df_mae = metrics.sort_values("mae_test")
-#     df_cv = metrics.sort_values("rmse_cv")
-    
-#     # Bar chart test RMSE
-#     plt.figure(figsize = (12, 7))
-#     plt.barh(df_rmse["model"], df_rmse["rmse_test"])
-#     plt.xlabel("Test RMSE lower is better")
-#     plt.title("Model Performance Test RMSE")
-#     plt.grid(axis = "x", alpha = 0.4)
-#     plt.tight_layout()
-#     plt.savefig(f"{output_dir}/rmse_bar_chart.png", dpi = 300)
-#     plt.close()
-
-#     # Bar chart test MAE
-#     plt.figure(figsize=(12, 7))
-#     plt.barh(df_mae["model"], df_mae["mae_test"], color="#31a354")
-#     plt.xlabel("Test MAE (lower is better)")
-#     plt.title("Model Performance — Test MAE")
-#     plt.grid(axis="x", alpha=0.4)
-#     plt.tight_layout()
-#     plt.savefig(f"{output_dir}/mae_bar_chart.png", dpi=300)
-#     plt.close()
-
-#     # Bar chart test CV
-#     plt.figure(figsize=(12, 7))
-#     plt.barh(df_cv["model"], df_cv["rmse_cv"], color="#de2d26")
-#     plt.xlabel("Cross-validation RMSE (lower is better)")
-#     plt.title("Model Performance — CV RMSE")
-#     plt.grid(axis="x", alpha=0.4)
-#     plt.tight_layout()
-#     plt.savefig(f"{output_dir}/cv_rmse_bar_chart.png", dpi=300)
-#     plt.close()
-
-# Public pipeline API 
 
 def run_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
     #Execute the full pipeline and return the RMSE leaderboard.
@@ -358,21 +377,55 @@ def run_pipeline(paths: ProjectPaths | None = None) -> pd.DataFrame:
 
     metrics, predictions, fitted_models = train_models(modeling_data)
 
+    # Save metrics + modeling table
     metrics.to_csv(paths.output_dir / "model_rmse.csv", index=False)
     base.to_csv(paths.output_dir / "modeling_table.csv", index=False)
 
+    # ---- Build test_predictions with quantiles & intervals ----
     pred_frame = modeling_data.test_view.copy()
+
+    # 1) Keep the generic per-model predictions (good for debugging / analysis)
     for name, values in predictions.items():
         pred_frame[f"pred_{name}_marketValue"] = values
+
+    # 2) Add explicit quantile columns for LightGBM_QR and CatBoost_QR
+    alpha_to_suffix = {
+        0.1: "p10",
+        0.5: "p50",
+        0.9: "p90",
+    }
+
+    # LightGBM quantiles
+    for alpha, suffix in alpha_to_suffix.items():
+        model_name = f"LightGBM_QR_{alpha}"
+        if model_name in predictions:
+            pred_frame[f"LGBM_QR_{suffix}"] = predictions[model_name]
+
+    # CatBoost quantiles
+    for alpha, suffix in alpha_to_suffix.items():
+        model_name = f"CatBoost_QR_{alpha}"
+        if model_name in predictions:
+            pred_frame[f"CatBoost_QR_{suffix}"] = predictions[model_name]
+
+    # 3) Interval widths (P90 - P10) when both exist
+    if {"LGBM_QR_p10", "LGBM_QR_p90"}.issubset(pred_frame.columns):
+        pred_frame["LGBM_QR_interval_width"] = (
+            pred_frame["LGBM_QR_p90"] - pred_frame["LGBM_QR_p10"]
+        )
+
+    if {"CatBoost_QR_p10", "CatBoost_QR_p90"}.issubset(pred_frame.columns):
+        pred_frame["CatBoost_QR_interval_width"] = (
+            pred_frame["CatBoost_QR_p90"] - pred_frame["CatBoost_QR_p10"]
+        )
+
+    # Save predictions + quantiles
     pred_frame.to_csv(paths.output_dir / "test_predictions.csv", index=False)
 
+    # Feature importances as before
     importances = compute_feature_importances(fitted_models, modeling_data.features)
     if not importances.empty:
         importances.to_csv(paths.output_dir / "feature_importances.csv", index=False)
 
-    # Generate visuals automatically
-    #generate_visuals(metrics, str(paths.output_dir))
-    
     print("RMSE vs actual fee (lower is better)")
     print(metrics.to_string(index=False))
     print(f"\nOutputs written to: {paths.output_dir}")
