@@ -298,6 +298,39 @@ def build_predictions_long(preds: pd.DataFrame, actual_col: str, model_cols: lis
     melted.drop(columns=["model_col"], inplace=True)
     return melted
 
+def plot_model_performance_bars(metrics: pd.DataFrame, fig_dir: Path) -> None:
+    """Recreates the old generate_visuals() RMSE/MAE/CV bar charts."""
+    required_cols = {"model", "rmse_test", "mae_test", "rmse_cv"}
+    if not required_cols.issubset(metrics.columns):
+        print("Skipping model performance bars: missing required columns.")
+        return
+
+    # RMSE Test
+    df_rmse = metrics.sort_values("rmse_test")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.barh(df_rmse["model"], df_rmse["rmse_test"])
+    ax.set_xlabel("Test RMSE (lower is better)")
+    ax.set_title("Model Performance — Test RMSE")
+    ax.grid(axis="x", alpha=0.4)
+    save_figure(fig, fig_dir / "rmse_bar_chart.png")
+
+    # MAE Test
+    df_mae = metrics.sort_values("mae_test")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.barh(df_mae["model"], df_mae["mae_test"], color="#31a354")
+    ax.set_xlabel("Test MAE (lower is better)")
+    ax.set_title("Model Performance — Test MAE")
+    ax.grid(axis="x", alpha=0.4)
+    save_figure(fig, fig_dir / "mae_bar_chart.png")
+
+    # CV RMSE
+    df_cv = metrics.sort_values("rmse_cv")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.barh(df_cv["model"], df_cv["rmse_cv"], color="#de2d26")
+    ax.set_xlabel("Cross-validation RMSE (lower is better)")
+    ax.set_title("Model Performance — CV RMSE")
+    ax.grid(axis="x", alpha=0.4)
+    save_figure(fig, fig_dir / "cv_rmse_bar_chart.png")
 
 # ---------------------------------------------------------------------------
 # Main CLI flow
@@ -382,6 +415,8 @@ def main(outputs_dir: str | Path) -> None:
     if rmse is not None:
         print("\n=== Model RMSE (lower is better) ===")
         print(rmse.sort_values("rmse_vs_fee"))
+        # Add model performance bar charts (RMSE/MAE/CV)
+        plot_model_performance_bars(rmse, fig_dir)
 
     if fi is not None:
         plot_feature_importances(fi, fig_dir)
