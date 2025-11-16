@@ -120,8 +120,6 @@ def main(outputs_dir: str):
     for p in [fc_path, inds_path, mdl_path, rmse_path, fi_path, preds_path]:
         print(("OK  " if os.path.exists(p) else "MISS"), p)
 
-    # ... (keep your existing summaries/plots here unchanged) ...
-
     # === NEW: build the two paper-style tables from predictions ===
     if preds is not None:
         _make_paper_tables(preds, odir)
