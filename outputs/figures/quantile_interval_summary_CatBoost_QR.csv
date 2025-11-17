@@ -1,0 +1,2 @@
+model_prefix,coverage_p10_p90,below_p10,above_p90,median_mae_vs_p50,mean_interval_width,median_interval_width,n
+CatBoost_QR,0.24742268041237114,0.4948453608247423,0.27835051546391754,7807829.163800613,7604539.62366704,6401645.74996946,194

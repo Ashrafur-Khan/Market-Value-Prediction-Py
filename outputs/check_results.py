@@ -298,6 +298,147 @@ def build_predictions_long(preds: pd.DataFrame, actual_col: str, model_cols: lis
     melted.drop(columns=["model_col"], inplace=True)
     return melted
 
+def analyze_quantile_intervals(
+    preds: pd.DataFrame,
+    actual_col: str,
+    model_prefix: str,
+    fig_dir: Path
+) -> None:
+    """Analyze and visualize P10/P50/P90 intervals for a given quantile model prefix.
+
+    Expects columns like:
+      - f"{model_prefix}_p10"
+      - f"{model_prefix}_p50"
+      - f"{model_prefix}_p90"
+      - optional: f"{model_prefix}_interval_width"
+    """
+    p10_col = f"{model_prefix}_p10"
+    p50_col = f"{model_prefix}_p50"
+    p90_col = f"{model_prefix}_p90"
+
+    needed = [actual_col, p10_col, p50_col, p90_col]
+    if not all(col in preds.columns for col in needed):
+        print(f"Skipping quantile analysis for {model_prefix}: required columns missing.")
+        return
+
+    df = preds.dropna(subset=needed).copy()
+    if df.empty:
+        print(f"No valid rows for quantile analysis: {model_prefix}")
+        return
+
+    y = df[actual_col]
+    p10 = df[p10_col]
+    p50 = df[p50_col]
+    p90 = df[p90_col]
+
+    # --- Coverage and interval stats ---
+    within = float(((y >= p10) & (y <= p90)).mean())
+    below = float((y < p10).mean())
+    above = float((y > p90).mean())
+    median_mae = float(np.mean(np.abs(y - p50)))
+    interval_width = p90 - p10
+    mean_width = float(interval_width.mean())
+    median_width = float(interval_width.median())
+
+    summary = pd.DataFrame(
+        {
+            "model_prefix": [model_prefix],
+            "coverage_p10_p90": [within],
+            "below_p10": [below],
+            "above_p90": [above],
+            "median_mae_vs_p50": [median_mae],
+            "mean_interval_width": [mean_width],
+            "median_interval_width": [median_width],
+            "n": [len(df)],
+        }
+    )
+
+    csv_path = fig_dir / f"quantile_interval_summary_{model_prefix}.csv"
+    summary.to_csv(csv_path, index=False)
+    print(f"Saved quantile interval summary for {model_prefix}: {csv_path}")
+    print(summary.to_string(index=False))
+
+    # --- Visual 1: fan plot (actual vs median with P10–P90 band) ---
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(y, p50, alpha=0.6, edgecolor="none", label="Median prediction (P50)")
+
+    # Error bars as vertical lines
+    ax.vlines(y, p10, p90, alpha=0.2)
+
+    # Ideal line
+    lower = float(np.nanmin([y.min(), p50.min()]))
+    upper = float(np.nanmax([y.max(), p50.max()]))
+    ax.plot([lower, upper], [lower, upper], "--", color="grey", linewidth=1, label="Ideal")
+
+    ax.set_xlabel("Actual Transfer Fee (€)")
+    ax.set_ylabel("Predicted Median (P50) (€)")
+    ax.set_title(f"{model_prefix}: P10–P90 Interval vs Actual Fee")
+    ax.legend()
+    save_figure(fig, fig_dir / f"{model_prefix}_fan_plot.png")
+
+    # --- Visual 2: interval width distribution ---
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(interval_width, bins=30, alpha=0.7)
+    ax.set_xlabel("Interval width (P90 - P10) (€)")
+    ax.set_ylabel("Count")
+    ax.set_title(f"{model_prefix}: Interval Width Distribution")
+    save_figure(fig, fig_dir / f"{model_prefix}_interval_width_hist.png")
+
+def plot_popularity_vs_quantiles(
+    preds: pd.DataFrame,
+    popularity_col: str,
+    model_prefix: str,
+    fig_dir: Path
+) -> None:
+    """Plot popularity vs P10 / P50 / P90 for a given quantile model."""
+    p10_col = f"{model_prefix}_p10"
+    p50_col = f"{model_prefix}_p50"
+    p90_col = f"{model_prefix}_p90"
+
+    needed = [popularity_col, p10_col, p50_col, p90_col]
+    if not all(col in preds.columns for col in needed):
+        print(f"Skipping popularity vs quantiles for {model_prefix}: required columns missing.")
+        return
+
+    df = preds.dropna(subset=needed).copy()
+    if df.empty:
+        print(f"No valid rows for popularity vs quantiles: {model_prefix}")
+        return
+
+    pop = pd.to_numeric(df[popularity_col], errors="coerce")
+    df = df[pop.notna()].copy()
+    pop = pop[pop.notna()]
+
+    if df.empty:
+        print(f"No valid rows after numeric conversion for {model_prefix} / {popularity_col}")
+        return
+
+    p10 = df[p10_col]
+    p50 = df[p50_col]
+    p90 = df[p90_col]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.scatter(pop, p50, alpha=0.4, label="P50", s=20)
+    ax.scatter(pop, p10, alpha=0.3, label="P10", s=20)
+    ax.scatter(pop, p90, alpha=0.3, label="P90", s=20)
+
+    # Optional LOWESS smoothing for each quantile if enough data
+    if len(df) >= 20:
+        for vals, label, color in [
+            (p10, "P10 LOWESS", "#1f77b4"),
+            (p50, "P50 LOWESS", "#2ca02c"),
+            (p90, "P90 LOWESS", "#d62728"),
+        ]:
+            smooth = lowess(vals, pop, frac=0.3, return_sorted=True)
+            ax.plot(smooth[:, 0], smooth[:, 1], linewidth=2, label=label)
+
+    ax.set_xlabel(f"Popularity ({popularity_col})")
+    ax.set_ylabel("Predicted Market Value (€)")
+    ax.set_title(f"{model_prefix}: Popularity vs Quantiles")
+    ax.legend()
+    save_figure(fig, fig_dir / f"{model_prefix}_popularity_vs_quantiles_{popularity_col}.png")
+
+
 def plot_model_performance_bars(metrics: pd.DataFrame, fig_dir: Path) -> None:
     """Recreates the old generate_visuals() RMSE/MAE/CV bar charts."""
     required_cols = {"model", "rmse_test", "mae_test", "rmse_cv"}
@@ -428,12 +569,32 @@ def main(outputs_dir: str | Path) -> None:
             print("\nSkipping prediction diagnostics: required columns not found.")
         else:
             if mdl is not None and "Player" in mdl.columns:
-                meta_cols = [c for c in ["Player", "League", "Nacionalidad", "Continent"] if c in mdl.columns]
-                if meta_cols:
-                    metadata = mdl[meta_cols].drop_duplicates("Player")
-                    preds = preds.merge(metadata, on="Player", how="left")
+                if preds is not None:
+                    actual_col = "Cost_eur" if "Cost_eur" in preds.columns else None
+                    model_cols = [c for c in preds.columns if c.startswith("pred_")]
+                    if actual_col is None or not model_cols:
+                        print("\nSkipping prediction diagnostics: required columns not found.")
+                    else:
+                        if mdl is not None and "Player" in mdl.columns:
+                            # Include popularity indicators as metadata for later plots
+                            meta_cols = [c for c in [
+                                "Player", "League", "Nacionalidad", "Continent",
+                                "PC1", "Mean", "Variance", "Min", "Max", "Median"
+                            ] if c in mdl.columns]
+                            if meta_cols:
+                                metadata = mdl[meta_cols].drop_duplicates("Player")
+                                preds = preds.merge(metadata, on="Player", how="left")
 
-            to_numeric(preds, [actual_col, "Age"] + model_cols)
+            # Quantile and interval columns
+            quantile_cols = [
+                c for c in preds.columns
+                if c.startswith("LGBM_QR_p")
+                or c.startswith("CatBoost_QR_p")
+                or c.endswith("_interval_width")
+            ]
+
+            to_numeric(preds, [actual_col, "Age"] + model_cols + quantile_cols)
+
 
             plot_actual_vs_pred(preds, actual_col, model_cols, fig_dir)
 
@@ -450,6 +611,15 @@ def main(outputs_dir: str | Path) -> None:
                         plot_segment_metrics(seg_metrics, segment, fig_dir)
 
                 spotlight_top_residuals(pred_long, fig_dir)
+
+            # ---- New: quantile diagnostics and popularity vs quantiles ----
+            for prefix in ["LGBM_QR", "CatBoost_QR"]:
+                analyze_quantile_intervals(preds, actual_col, prefix, fig_dir)
+
+                # If you want to use PC1 as your main popularity indicator:
+                if "PC1" in preds.columns:
+                    plot_popularity_vs_quantiles(preds, "PC1", prefix, fig_dir)
+
 
 
 if __name__ == "__main__":
